@@ -1,0 +1,9 @@
+test/**
+scripts/**
+sample/**
+.vscode/**
+*.vsix
+node_modules/**
+media/webview/**
+media/layout.js
+media/dist/*.map

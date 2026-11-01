@@ -1,0 +1,134 @@
+{
+  "name": "cpp-code-graph",
+  "displayName": "C/C++ Code Graph",
+  "description": "See how a C/C++ codebase fits together: an interactive graph of files, includes, header/source pairs, functions, calls and the structs they use, with git commit comparison and AI questions about the code.",
+  "version": "0.1.0",
+  "publisher": "cpp-code-graph",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Visualization",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "c",
+    "c++",
+    "cpp",
+    "graph",
+    "call graph",
+    "visualization",
+    "architecture"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:c",
+    "onLanguage:cpp"
+  ],
+  "scripts": {
+  "build": "node scripts/build-extension.js && node scripts/build-webview.js",
+  "watch": "node scripts/watch.js",
+  "typecheck": "tsc -p .",
+  "test": "node test/run.js",
+  "package": "node scripts/package.js"
+},
+  "contributes": {
+    "commands": [
+      {
+        "command": "codeGraph.open",
+        "title": "Open Code Graph",
+        "category": "Code Graph",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "codeGraph.revealInGraph",
+        "title": "Show in Code Graph",
+        "category": "Code Graph"
+      },
+      {
+        "command": "codeGraph.refresh",
+        "title": "Rescan Workspace",
+        "category": "Code Graph"
+      },
+      {
+        "command": "codeGraph.compareCommits",
+        "title": "Compare Git Commits",
+        "category": "Code Graph"
+      },
+      {
+        "command": "codeGraph.buildSemantic",
+        "title": "Build AI Layer (Concepts and Inferred Links)",
+        "category": "Code Graph"
+      },
+      {
+        "command": "codeGraph.ask",
+        "title": "Ask a Question About the Code",
+        "category": "Code Graph"
+      },
+      {
+        "command": "codeGraph.dumpSymbols",
+        "title": "Dump Parsed Symbols (debug)",
+        "category": "Code Graph"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "codeGraph.revealInGraph",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "navigation@90"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "codeGraph.open",
+          "when": "editorLangId == c || editorLangId == cpp",
+          "group": "navigation@90"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "C/C++ Code Graph",
+      "properties": {
+        "codeGraph.include": {
+          "type": "string",
+          "default": "**/*.{c,cc,cpp,cxx,c++,h,hh,hpp,hxx,h++,inl,ipp,tpp}",
+          "description": "Glob pattern of source files to analyze."
+        },
+        "codeGraph.exclude": {
+          "type": "string",
+          "default": "**/{node_modules,.git,build,out,bin,obj,third_party,thirdparty,external,vendor,deps,cmake-build-*,.vscode}/**",
+          "description": "Glob pattern of files and folders to skip."
+        },
+        "codeGraph.maxFiles": {
+          "type": "number",
+          "default": 3000,
+          "description": "Maximum number of files to analyze."
+        },
+        "codeGraph.aiSummaries": {
+          "type": "boolean",
+          "default": true,
+          "description": "Describe the selected function, type or file with the language model in the Ask AI panel. Descriptions are saved until the code they describe changes."
+        },
+        "codeGraph.autoRefresh": {
+          "type": "boolean",
+          "default": true,
+          "description": "Rebuild the graph automatically when C/C++ files are saved, created or deleted."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.95.0",
+    "cytoscape": "3.34.4",
+    "cytoscape-elk": "2.3.0",
+    "esbuild": "0.28.2",
+    "tree-sitter-c": "0.24.1",
+    "tree-sitter-cpp": "0.23.4",
+    "typescript": "7.0.2",
+    "web-tree-sitter": "0.27.1"
+  }
+}

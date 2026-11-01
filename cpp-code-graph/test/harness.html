@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="../media/graph.css">
+<title>Code Graph harness</title>
+</head>
+<body class="vscode-dark">
+<div id="app"></div>
+<script>
+  // Stand-in for the VS Code webview API.
+  window.__sent = [];
+  window.acquireVsCodeApi = () => ({
+    postMessage(m) {
+      window.__sent.push(m);
+      if (m.type === 'getSource') {
+        // Answer like the extension host: lines [start, end] of the file, capped at 200.
+        const text = (window.__FIXTURES.sources || {})[m.file];
+        setTimeout(() => {
+          if (text === undefined) return window.postMessage({ type: 'source', reqId: m.reqId, error: 'Source is not available.' }, '*');
+          const all = text.split(/\r?\n/);
+          const first = Math.max(1, m.start || 1);
+          const wanted = Math.max(first, m.end || first + 29);
+          const last = Math.min(all.length, wanted, first + 199);
+          window.postMessage({ type: 'source', reqId: m.reqId, startLine: first, lines: all.slice(first - 1, last), truncated: wanted > last }, '*');
+        }, 20);
+      }
+      // ?ai answers questions with a canned investigation, like the agent in the extension host.
+      if (m.type === 'ask' && new URLSearchParams(location.search).has('ai')) replayInvestigation(m);
+      // Node summaries: canned with ?ai, otherwise "no model" like VS Code without Copilot.
+      if (m.type === 'getSummary') {
+        const n = window.__FIXTURES.graph.nodes.find(x => x.id === m.id);
+        const count = (window.__summaryCount = (window.__summaryCount || 0) + 1);
+        const reply = new URLSearchParams(location.search).has('ai')
+          ? { summary: { purpose: `(${count}) ${n.label} draws every shape onto the canvas and logs each one.`, tags: ['rendering', 'entry point'], notes: ['Calls draw through the Shape base class.'] }, model: 'Harness' }
+          : { unavailable: true };
+        setTimeout(() => window.postMessage({ type: 'summary', id: m.id, ...reply }, '*'), 120);
+      }
+      // Change impact: computed with the real src/ai/impact.js, like the extension does.
+      if (m.type === 'impact') {
+        const { predictImpact, RELATION_LABELS, CHANGE_TYPES } = load('impact');
+        const { GraphTools } = load('graphTools');
+        const graph = window.__FIXTURES.graph;
+        if (!window.__tools || window.__tools.graph !== graph) window.__tools = new GraphTools(graph);
+        const result = predictImpact(window.__tools, m.id, m.changeType);
+        setTimeout(() => window.postMessage({ type: 'impactResult', id: m.id, requested: m.changeType, ...result, labels: { relations: RELATION_LABELS, changes: CHANGE_TYPES } }, '*'), 20);
+      }
+      // History, kept like the extension does (newest first).
+      if (m.type === 'aiHistoryDelete') postHistory(window.__history.filter(e => e.id !== m.id));
+      if (m.type === 'aiHistoryClear') postHistory([]);
+      if (m.type === 'ready') {
+        const f = window.__FIXTURES;
+        // ?semantic starts with the AI layer built.
+        const graph = new URLSearchParams(location.search).has('semantic') ? withLayer(f.graph) : f.graph;
+        setTimeout(() => window.postMessage({ type: 'graph', data: graph, title: 'sample' }, '*'), 10);
+      }
+      // Building the AI layer: busy, then the graph with the layer, like the extension.
+      if (m.type === 'buildSemantic') {
+        window.postMessage({ type: 'semanticBuilding', busy: true }, '*');
+        setTimeout(() => {
+          window.postMessage({ type: 'semanticBuilding', busy: false }, '*');
+          window.postMessage({ type: 'graph', data: withLayer(window.__FIXTURES.graph), title: 'sample' }, '*');
+        }, 150);
+      }
+    },
+    getState() { return null; },
+    setState() {}
+  });
+
+  // A minimal CommonJS loader for the extension's modules that don't need vscode.
+  // load('ai/impact') loads src/ai/impact.js; requires inside it resolve relative to it.
+  const loaded = {};
+  function load(name) {
+    if (!name.includes('/')) name = 'ai/' + name;
+    if (loaded[name]) return loaded[name].exports;
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '../src/' + name + '.js', false);
+    xhr.send();
+    const module = (loaded[name] = { exports: {} });
+    const dir = name.split('/').slice(0, -1);
+    const resolve = p => {
+      const parts = [...dir];
+      for (const seg of p.replace(/\.js$/, '').split('/')) {
+        if (seg === '..') parts.pop();
+        else if (seg !== '.') parts.push(seg);
+      }
+      return parts.join('/');
+    };
+    new Function('require', 'module', 'exports', xhr.responseText)(p => load(resolve(p)), module, module.exports);
+    return module.exports;
+  }
+
+  /** The sample graph with a canned AI layer: concepts by area, and two inferred links with evidence. */
+  function withLayer(graph) {
+    const by = (key, v) => (graph.nodes.find(n => n[key] === v) || {}).id;
+    const concepts = {};
+    for (const n of graph.nodes) {
+      if (!['function', 'method', 'class', 'struct', 'enum'].includes(n.kind)) continue;
+      const file = n.defFile || n.file;
+      concepts[n.id] = file.startsWith('c/') ? ['logging'] : /Canvas/.test(n.qname || '') ? ['rendering'] : n.label === 'main' || n.label === 'addDefaults' ? ['app startup'] : ['geometry', 'shapes'];
+    }
+    const edge = (s, t, evidence, reason, hint) => ({
+      id: 'semantic:' + s + '->' + t, source: s, target: t, kind: 'semantic', relation: 'alternative', label: 'alternative implementation of', symmetric: true, confidence: 0.86, reason, evidence, hint,
+      provenance: { model: 'Harness', time: Date.now() - 2 * 3600 * 1000 }
+    });
+    const edges = [
+      edge(by('qname', 'geo::Circle::area'), by('qname', 'geo::Rectangle::area'), { file: 'src/shape.cpp', line: 17, quote: 'double Circle::area() const {' }, 'both compute the area of a shape', 'both override geo::Shape::area'),
+      edge(by('qname', 'geo::Circle'), by('qname', 'geo::Rectangle'), null, 'two kinds of shape', 'both derive from geo::Shape')
+    ];
+    return { ...graph, edges: graph.edges.concat(edges), concepts, semantic: { model: 'Harness', time: Date.now() - 2 * 3600 * 1000, edges: 2, concepts: 5, tagged: Object.keys(concepts).length } };
+  }
+
+  window.__history = [];
+  function postHistory(entries) {
+    window.__history = entries;
+    setTimeout(() => window.postMessage({ type: 'aiHistory', entries }, '*'), 5);
+  }
+
+  function replayInvestigation(m) {
+    const g = window.__FIXTURES.graph;
+    const by = (key, v) => (g.nodes.find(n => n[key] === v) || {}).id;
+    const main = by('label', 'main');
+    const render = by('qname', 'geo::Canvas::render');
+    const draw = by('qname', 'geo::Shape::draw');
+    const plot = by('qname', 'geo::Canvas::plot');
+    const logMessage = by('label', 'log_message');
+    const circleDraw = by('qname', 'geo::Circle::draw');
+    const logClose = by('label', 'log_close');
+    const site = (file, line) => ({ file, line });
+    // Trace path answers come with routes: the usual path and two alternatives.
+    const routes = m.mode === 'path' ? [
+      { label: 'main', divergeAt: 0, steps: [
+        { id: main, kind: 'call' },
+        { id: render, kind: 'call', note: 'draws every shape', inferred: false, site: site('src/main.cpp', 15) },
+        { id: draw, kind: 'call', inferred: false, uncertain: true, site: site('src/canvas.cpp', 18) },
+        { id: plot, kind: 'call', inferred: false, site: site('src/shape.cpp', 10) }
+      ] },
+      { label: 'circle', divergeAt: 1, steps: [
+        { id: main, kind: 'call' },
+        { id: render, kind: 'branch', condition: 'shape is a Circle', inferred: false, site: site('src/main.cpp', 15) },
+        { id: circleDraw, kind: 'callback', inferred: false, uncertain: true, site: site('src/canvas.cpp', 18) },
+        { id: plot, kind: 'call', inferred: false, site: site('src/shape.cpp', 24) }
+      ] },
+      { label: 'shutdown', divergeAt: 0, steps: [
+        { id: main, kind: 'call' },
+        { id: logClose, kind: 'error', condition: 'if (!g_file)', inferred: false, site: site('src/main.cpp', 19) },
+        { id: plot, kind: 'call', inferred: true }
+      ] }
+    ] : undefined;
+    const steps = [
+      { tool: 'search_symbols', args: { query: m.question }, summary: 'Searched the question → 3 symbols', nodeIds: [render, main, plot] },
+      { tool: 'neighbors', args: { direction: 'out' }, summary: 'Outgoing calls of geo::Canvas::render (4)', nodeIds: [render, logMessage, draw], note: 'Checking what render calls.' },
+      { tool: 'read_code', args: {}, summary: 'Read the code of geo::Canvas::render', nodeIds: [render] }
+    ];
+    const post = (msg, t) => setTimeout(() => window.postMessage(msg, '*'), t);
+    const STEP_MS = 150;
+    post({ type: 'aiStart', question: m.question }, 10);
+    steps.forEach((s, i) => post({ type: 'aiStep', step: { ...s, i } }, STEP_MS * (i + 1)));
+    const entryId = 'h' + (window.__history.length + 1) + '-' + Math.random().toString(36).slice(2, 6);
+    const time = Date.now();
+    const result = {
+      answer: `About “${m.question}”: drawing starts in [[${main}]], which calls [[${render}]]. Each shape draws itself through [[${draw}]], which plots pixels with [[${plot}]].`,
+      highlight: [main, render, draw, plot],
+      path: [main, render, draw, plot],
+      hops: [{ s: main, t: render, inferred: false }, { s: render, t: draw, inferred: false, uncertain: true }, { s: draw, t: plot, inferred: false }],
+      evidence: [
+        { nodeId: render, file: 'src/canvas.cpp', line: 18, claim: 'render calls draw on each shape' },
+        { nodeId: main, file: 'src/main.cpp', line: 15, claim: 'main hands the shapes to render' }
+      ],
+      confidence: 'high',
+      confidenceReason: 'read the code of 2 of the 2 functions it cites; 2 cited source lines',
+      model: 'Harness',
+      routes
+    };
+    setTimeout(() => {
+      window.postMessage({ type: 'aiResult', ...result, steps: steps.length, entryId, time }, '*');
+      postHistory([{ id: entryId, time, question: m.question, mode: m.mode || 'ask', ...result, steps }, ...window.__history]);
+    }, STEP_MS * (steps.length + 2));
+  }
+</script>
+<script>
+  // ?large loads a bigger generated project (see test/gen-large.js).
+  document.write('<script src="' + (location.search.includes('large') ? 'fixtures-large.js' : 'fixtures.js') + '"><\/script>');
+</script>
+<script src="../media/highlight.js"></script>
+<script src="../media/dist/graph.js"></script>
+<script>
+  // ?code=name (repeatable) opens the inline code card of every node with that name, for screenshots.
+  // ?preset=calls|includes|inheritance|structure and ?arrows=selected|bundled|all pick a view.
+  // ?ai replays a canned AI investigation for every question asked.
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('preset') || qs.get('arrows')) setTimeout(() => {
+    if (qs.get('preset')) window.__codeGraph.applyPreset(qs.get('preset'));
+    if (qs.get('arrows')) window.__codeGraph.setEdgeMode(qs.get('arrows'));
+  }, 100);
+  const wantCode = new URLSearchParams(location.search).getAll('code');
+  if (wantCode.length) setTimeout(() => {
+    const cg = window.__codeGraph;
+    for (const name of wantCode) {
+      const n = cg.S.graph.nodes.find(x => x.label === name);
+      if (n) { cg.reveal(n.id, { center: false }); cg.toggleCode(n.id, true); }
+    }
+    // ?focus=name centers the view on that node once its code has loaded.
+    const focus = new URLSearchParams(location.search).get('focus');
+    const target = focus && cg.S.graph.nodes.find(x => x.label === focus);
+    if (target) setTimeout(() => cg.centerOn(target.id, false), 150);
+  }, 200);
+</script>
+</body>
+</html>
